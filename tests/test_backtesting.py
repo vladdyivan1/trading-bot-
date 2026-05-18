@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from backtesting.engine import BacktestEngine
 from strategies.base_strategy import BaseStrategy, TradeSignal
@@ -47,4 +48,4 @@ def test_backtest_tracks_take_profit_trade_and_metrics():
     assert result.equity_curve.iloc[-1] == 10_100
     assert result.metrics["number_of_trades"] == 1
     assert result.metrics["win_rate"] == 1
-    assert result.metrics["total_return"] == 0.01
+    assert result.metrics["total_return"] == pytest.approx(0.01)

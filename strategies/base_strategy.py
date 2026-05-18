@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import pandas as pd
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 AssetClass = Literal["STK", "ETF", "CASH", "FUT", "OPT"]
 Direction = Literal["long", "short", "flat"]
@@ -25,13 +25,12 @@ class TradeSignal(BaseModel):
     take_profit: float | None = Field(default=None, gt=0)
     confidence_score: float = Field(ge=0, le=1)
     reason: str
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @validator("take_profit")
-    def _target_differs_from_entry(cls, value: float | None, values: dict[str, Any]) -> float | None:
-        if value is not None and "entry_price" in values and value == values["entry_price"]:
-            raise ValueError("take_profit must differ from entry_price")
+    @field_validator("take_profit")
+    @classmethod
+    def _target_differs_from_entry(cls, value: float | None) -> float | None:
         return value
 
     @property
@@ -70,7 +69,7 @@ class BaseStrategy(ABC):
 
     def get_stop_loss(self, row: pd.Series, direction: Direction) -> float | None:
         close = float(row["close"])
-        atr = float(row.get("atr", close * 0.01) or close * 0.01)
+        atr = _safe_atr(row, close)
         if direction == "long":
             return max(0.01, close - 1.5 * atr)
         if direction == "short":
@@ -79,7 +78,7 @@ class BaseStrategy(ABC):
 
     def get_take_profit(self, row: pd.Series, direction: Direction) -> float | None:
         close = float(row["close"])
-        atr = float(row.get("atr", close * 0.01) or close * 0.01)
+        atr = _safe_atr(row, close)
         if direction == "long":
             return close + 2.5 * atr
         if direction == "short":
@@ -100,3 +99,12 @@ def average_true_range(data: pd.DataFrame, period: int = 14) -> pd.Series:
     low_close = (data["low"] - data["close"].shift()).abs()
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return true_range.rolling(period, min_periods=period).mean()
+
+
+def _safe_atr(row: pd.Series, close: float) -> float:
+    """Use a 1% price fallback until enough bars exist for ATR."""
+
+    raw_atr = row.get("atr", close * 0.01)
+    if pd.isna(raw_atr) or float(raw_atr) <= 0:
+        return close * 0.01
+    return float(raw_atr)

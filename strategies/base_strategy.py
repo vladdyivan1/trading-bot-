@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 import pandas as pd
@@ -23,7 +23,7 @@ class StrategySignal(BaseModel):
     confidence_score: float = Field(ge=0, le=1)
     reason: str
     strategy_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def reward_risk(self) -> float:

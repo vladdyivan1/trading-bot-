@@ -1,0 +1,35 @@
+# Core
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# IBKR
+ib_insync>=0.9.86
+
+# Data & numerics
+pandas>=2.1.0
+numpy>=1.26.0
+scipy>=1.11.0
+
+# ML
+scikit-learn>=1.3.0
+lightgbm>=4.1.0
+joblib>=1.3.0
+
+# Database
+SQLAlchemy>=2.0.0
+
+# LLM
+openai>=1.12.0
+anthropic>=0.18.0
+
+# Dashboard
+streamlit>=1.31.0
+plotly>=5.18.0
+
+# Logging
+loguru>=0.7.2
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0

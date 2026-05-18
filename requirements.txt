@@ -1,0 +1,15 @@
+ib-insync
+pandas
+numpy
+scipy
+scikit-learn
+openai
+anthropic
+python-dotenv
+SQLAlchemy
+streamlit
+plotly
+pytest
+pydantic
+joblib
+loguru

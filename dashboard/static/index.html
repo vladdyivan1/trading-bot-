@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SPY 0DTE Scalper Dashboard</title>
+  <style>
+    :root { --bg: #0f1419; --card: #1a2332; --text: #e7ecf3; --muted: #8b9cb3; --green: #3dd68c; --red: #f07178; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 1.5rem; }
+    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card { background: var(--card); border-radius: 8px; padding: 1rem; }
+    .card .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
+    .card .value { font-size: 1.5rem; font-weight: 600; margin-top: 0.25rem; }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #2a3544; }
+    th { color: var(--muted); }
+    section { margin-bottom: 2rem; }
+    .heatmap { display: flex; gap: 4px; flex-wrap: wrap; }
+    .heat-cell { padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.75rem; background: #243044; }
+    .heat-bull { background: #1e4d3a; }
+    .heat-bear { background: #4d1e2a; }
+    .heat-mixed { background: #4d3d1e; }
+    #status { color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>SPY 0DTE Scalper — Dashboard</h1>
+  <p id="status">Loading…</p>
+  <div class="grid" id="kpis"></div>
+  <section>
+    <h2>News Sentiment Heatmap</h2>
+    <div class="heatmap" id="sentimentHeatmap"></div>
+  </section>
+  <section>
+    <h2>Regime Analytics</h2>
+    <div class="heatmap" id="regimeHeatmap"></div>
+  </section>
+  <section>
+    <h2>Rejection Reasons</h2>
+    <div id="rejections"></div>
+  </section>
+  <section>
+    <h2>Recent AI Decisions</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Decision</th><th>Dir</th><th>Conf</th><th>Sentiment</th><th>Regime</th><th>Reason</th></tr></thead>
+      <tbody id="decisionsBody"></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Open Positions (Paper)</h2>
+    <table>
+      <thead><tr><th>Contract</th><th>Type</th><th>Qty</th><th>Entry</th><th>Opened</th></tr></thead>
+      <tbody id="positionsBody"></tbody>
+    </table>
+  </section>
+  <script>
+    const API = window.location.origin;
+    function kpi(label, value, cls = '') {
+      return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+    }
+    function renderHeatmap(el, data) {
+      el.innerHTML = Object.entries(data || {}).map(([k, v]) => {
+        const cls = k.includes('BULL') ? 'heat-bull' : k.includes('BEAR') ? 'heat-bear' : k.includes('MIXED') ? 'heat-mixed' : '';
+        return `<div class="heat-cell ${cls}">${k}: ${v}</div>`;
+      }).join('') || '<div class="heat-cell">No data</div>';
+    }
+    async function refresh() {
+      try {
+        const [stats, positions, cfg] = await Promise.all([
+          fetch(`${API}/api/stats`).then(r => r.json()),
+          fetch(`${API}/api/positions/open`).then(r => r.json()),
+          fetch(`${API}/api/config`).then(r => r.json()),
+        ]);
+        document.getElementById('status').textContent =
+          `Mode: ${cfg.execution_mode} | AI: ${cfg.enable_ai_filter} | News: ${cfg.enable_news_filter}`;
+        const pnlCls = stats.total_pnl >= 0 ? 'positive' : 'negative';
+        document.getElementById('kpis').innerHTML = [
+          kpi('Alerts', stats.total_alerts),
+          kpi('Approved', stats.approved, 'positive'),
+          kpi('Rejected', stats.rejected, 'negative'),
+          kpi('PnL', '$' + stats.total_pnl.toFixed(2), pnlCls),
+          kpi('Win Rate', (stats.win_rate * 100).toFixed(1) + '%'),
+          kpi('Open', stats.open_positions),
+        ].join('');
+        renderHeatmap(document.getElementById('sentimentHeatmap'), stats.sentiment_breakdown);
+        renderHeatmap(document.getElementById('regimeHeatmap'), stats.regime_breakdown);
+        document.getElementById('rejections').innerHTML = Object.entries(stats.rejection_reasons || {})
+          .map(([r, c]) => `<div class="card" style="margin:4px 0">${c}× ${r}</div>`).join('') || 'None';
+        document.getElementById('decisionsBody').innerHTML = (stats.recent_decisions || []).slice(0, 30).map(d =>
+          `<tr><td>${d.at?.slice(11,19)||''}</td><td>${d.decision}</td><td>${d.direction}</td><td>${(d.confidence*100).toFixed(0)}%</td><td>${d.sentiment}</td><td>${d.regime}</td><td>${d.reason?.slice(0,60)}</td></tr>`
+        ).join('');
+        document.getElementById('positionsBody').innerHTML = (positions || []).map(p =>
+          `<tr><td>${p.contract}</td><td>${p.type}</td><td>${p.quantity}</td><td>${p.entry_price?.toFixed(2)}</td><td>${p.opened_at?.slice(11,19)}</td></tr>`
+        ).join('') || '<tr><td colspan="5">No open positions</td></tr>';
+      } catch (e) {
+        document.getElementById('status').textContent = 'Error: ' + e.message;
+      }
+    }
+    refresh();
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>

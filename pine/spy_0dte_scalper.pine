@@ -1,0 +1,125 @@
+//@version=5
+strategy("SPY 0DTE AI-Assisted Scalper", overlay=true, calc_on_every_tick=true, process_orders_on_close=true, pyramiding=0, initial_capital=25000, commission_type=strategy.commission.cash_per_contract, commission_value=0.65)
+
+// This strategy only creates technical setups and JSON alert payloads.
+// News, AI filtering, risk checks, and option contract selection belong in the webhook backend.
+
+mode = input.string("Standard", "Entry Mode", options=["Aggressive", "Standard", "Conservative"])
+useOpeningRange = input.bool(true, "Require Opening Range Breakout")
+openingRangeSession = input.session("0930-0945", "Opening Range Window ET")
+morningSession = input.session("0935-1130", "Morning Trading Window ET")
+enableAfternoon = input.bool(true, "Enable Afternoon Window")
+afternoonSession = input.session("1330-1530", "Afternoon Trading Window ET")
+lunchBlock = input.session("1130-1330", "No-Trade Lunch Window ET")
+exchangeTz = input.string("America/New_York", "Session Timezone")
+
+emaFastLen = input.int(9, "EMA Fast", minval=1)
+emaSlowLen = input.int(21, "EMA Slow", minval=2)
+rsiLen = input.int(14, "RSI Length", minval=2)
+atrLen = input.int(14, "ATR Length", minval=2)
+atrStopMult = input.float(1.0, "ATR Stop Multiplier", minval=0.1, step=0.1)
+atrTargetMult = input.float(1.6, "ATR Target Multiplier", minval=0.1, step=0.1)
+volumeLen = input.int(20, "Volume Average Length", minval=2)
+volumeSpikeMult = input.float(1.35, "Volume Spike Multiplier", minval=0.5, step=0.05)
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+vwapValue = ta.vwap(hlc3)
+rsiValue = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+atrValue = ta.atr(atrLen)
+volumeAverage = ta.sma(volume, volumeLen)
+volumeSpike = volume > volumeAverage * volumeSpikeMult
+
+inMorning = not na(time(timeframe.period, morningSession, exchangeTz))
+inAfternoon = enableAfternoon and not na(time(timeframe.period, afternoonSession, exchangeTz))
+inLunch = not na(time(timeframe.period, lunchBlock, exchangeTz))
+sessionAllowed = (inMorning or inAfternoon) and not inLunch
+
+inOpeningRange = not na(time(timeframe.period, openingRangeSession, exchangeTz))
+newDay = ta.change(time("D"))
+var float openingHigh = na
+var float openingLow = na
+if newDay
+    openingHigh := na
+    openingLow := na
+if inOpeningRange
+    openingHigh := na(openingHigh) ? high : math.max(openingHigh, high)
+    openingLow := na(openingLow) ? low : math.min(openingLow, low)
+
+openingRangeReady = not inOpeningRange and not na(openingHigh) and not na(openingLow)
+bullishOrb = not useOpeningRange or (openingRangeReady and close > openingHigh)
+bearishOrb = not useOpeningRange or (openingRangeReady and close < openingLow)
+
+aggressive = mode == "Aggressive"
+conservative = mode == "Conservative"
+rsiBullThreshold = aggressive ? 50 : conservative ? 58 : 54
+rsiBearThreshold = aggressive ? 50 : conservative ? 42 : 46
+macdBull = aggressive ? macdHist > 0 : conservative ? (macdLine > macdSignal and macdHist > macdHist[1]) : macdLine > macdSignal
+macdBear = aggressive ? macdHist < 0 : conservative ? (macdLine < macdSignal and macdHist < macdHist[1]) : macdLine < macdSignal
+
+trendBull = emaFast > emaSlow and close > vwapValue
+trendBear = emaFast < emaSlow and close < vwapValue
+rsiBull = rsiValue >= rsiBullThreshold
+rsiBear = rsiValue <= rsiBearThreshold
+
+callSignal = sessionAllowed and trendBull and rsiBull and macdBull and volumeSpike and bullishOrb
+putSignal = sessionAllowed and trendBear and rsiBear and macdBear and volumeSpike and bearishOrb
+flatState = strategy.position_size == 0
+
+f_bool(value) =>
+    value ? "true" : "false"
+
+f_macd_state() =>
+    macdLine > macdSignal and macdHist > 0 ? "bullish" : macdLine < macdSignal and macdHist < 0 ? "bearish" : "mixed"
+
+f_payload(eventName, biasName) =>
+    "{" +
+    "\"ticker\":\"" + syminfo.ticker + "\"," +
+    "\"time\":\"" + str.tostring(timenow) + "\"," +
+    "\"price\":" + str.tostring(close, format.mintick) + "," +
+    "\"interval\":\"" + timeframe.period + "\"," +
+    "\"action\":\"" + eventName + "\"," +
+    "\"market_position\":\"" + strategy.market_position + "\"," +
+    "\"setup\":\"SPY_0DTE_SCALP\"," +
+    "\"bias\":\"" + biasName + "\"," +
+    "\"rsi\":" + str.tostring(rsiValue, "#.##") + "," +
+    "\"ema_fast\":" + str.tostring(emaFast, format.mintick) + "," +
+    "\"ema_slow\":" + str.tostring(emaSlow, format.mintick) + "," +
+    "\"macd_state\":\"" + f_macd_state() + "\"," +
+    "\"volume_state\":\"" + (volumeSpike ? "spike" : "normal") + "\"," +
+    "\"vwap_state\":\"" + (close > vwapValue ? "above" : close < vwapValue ? "below" : "at") + "\"," +
+    "\"opening_range_breakout\":" + f_bool((biasName == "bullish" and bullishOrb) or (biasName == "bearish" and bearishOrb)) + "," +
+    "\"atr\":" + str.tostring(atrValue, format.mintick) +
+    "}"
+
+callEntryPayload = f_payload("BUY_CALL_SETUP", "bullish")
+putEntryPayload = f_payload("BUY_PUT_SETUP", "bearish")
+callExitPayload = f_payload("EXIT_CALL_SETUP", "bullish")
+putExitPayload = f_payload("EXIT_PUT_SETUP", "bearish")
+
+if callSignal and flatState and not putSignal
+    strategy.entry("CALL_BIAS", strategy.long, alert_message=callEntryPayload)
+
+if putSignal and flatState and not callSignal
+    strategy.entry("PUT_BIAS", strategy.short, alert_message=putEntryPayload)
+
+longStop = strategy.position_avg_price - atrValue * atrStopMult
+longTarget = strategy.position_avg_price + atrValue * atrTargetMult
+shortStop = strategy.position_avg_price + atrValue * atrStopMult
+shortTarget = strategy.position_avg_price - atrValue * atrTargetMult
+
+strategy.exit("CALL_EXIT", "CALL_BIAS", stop=longStop, limit=longTarget, alert_message=callExitPayload)
+strategy.exit("PUT_EXIT", "PUT_BIAS", stop=shortStop, limit=shortTarget, alert_message=putExitPayload)
+
+plot(emaFast, "EMA 9", color=color.new(color.teal, 0))
+plot(emaSlow, "EMA 21", color=color.new(color.orange, 0))
+plot(vwapValue, "VWAP", color=color.new(color.purple, 0))
+plot(openingHigh, "Opening Range High", color=color.new(color.green, 55), style=plot.style_linebr)
+plot(openingLow, "Opening Range Low", color=color.new(color.red, 55), style=plot.style_linebr)
+
+plotshape(callSignal and flatState and not putSignal, title="Call Bias Setup", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), text="CALL")
+plotshape(putSignal and flatState and not callSignal, title="Put Bias Setup", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), text="PUT")
+
+alertcondition(callSignal and flatState and not putSignal, title="SPY 0DTE Call Bias", message="{\"ticker\":\"{{ticker}}\",\"time\":\"{{timenow}}\",\"price\":\"{{close}}\",\"interval\":\"{{interval}}\",\"action\":\"BUY_CALL_SETUP\",\"market_position\":\"{{strategy.market_position}}\",\"setup\":\"SPY_0DTE_SCALP\",\"bias\":\"bullish\"}")
+alertcondition(putSignal and flatState and not callSignal, title="SPY 0DTE Put Bias", message="{\"ticker\":\"{{ticker}}\",\"time\":\"{{timenow}}\",\"price\":\"{{close}}\",\"interval\":\"{{interval}}\",\"action\":\"BUY_PUT_SETUP\",\"market_position\":\"{{strategy.market_position}}\",\"setup\":\"SPY_0DTE_SCALP\",\"bias\":\"bearish\"}")

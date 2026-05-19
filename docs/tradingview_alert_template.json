@@ -1,0 +1,18 @@
+{
+  "ticker": "{{ticker}}",
+  "time": "{{timenow}}",
+  "price": "{{close}}",
+  "interval": "{{interval}}",
+  "action": "{{strategy.order.action}}",
+  "market_position": "{{strategy.market_position}}",
+  "setup": "SPY_0DTE_SCALP",
+  "bias": "bullish_or_bearish_from_strategy",
+  "rsi": "{{plot(\"RSI\")}}",
+  "ema_fast": "dynamic_from_strategy_alert_message",
+  "ema_slow": "dynamic_from_strategy_alert_message",
+  "macd_state": "dynamic_from_strategy_alert_message",
+  "volume_state": "dynamic_from_strategy_alert_message",
+  "vwap_state": "dynamic_from_strategy_alert_message",
+  "atr": "dynamic_from_strategy_alert_message",
+  "secret": "optional-shared-secret"
+}

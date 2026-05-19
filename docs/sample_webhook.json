@@ -1,0 +1,18 @@
+{
+  "ticker": "SPY",
+  "time": "2026-05-19T10:05:00-04:00",
+  "price": "502.35",
+  "interval": "5",
+  "action": "buy",
+  "market_position": "long",
+  "setup": "SPY_0DTE_SCALP",
+  "bias": "bullish",
+  "rsi": "58.5",
+  "ema_fast": "502.10",
+  "ema_slow": "501.40",
+  "macd_state": "bullish",
+  "volume_state": "spike",
+  "vwap_state": "above",
+  "atr": "1.12",
+  "entry_mode": "Conservative"
+}

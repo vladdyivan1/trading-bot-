@@ -1,0 +1,124 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// SPY 0DTE Scalper — technical signals only; webhook JSON for external AI/risk backend
+//@version=5
+strategy("SPY 0DTE Scalper", overlay=true, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=100000, commission_type=strategy.commission.cash_per_order, commission_value=0.65, process_orders_on_close=false, calc_on_every_tick=false)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+entryMode       = input.string("Conservative", "Entry Mode", options=["Aggressive", "Conservative"], group="Mode")
+useORB          = input.bool(true, "Enable Opening Range Breakout", group="Signals")
+orbMinutes      = input.int(15, "ORB Minutes After Open", minval=5, maxval=30, group="Signals")
+emaFastLen      = input.int(9, "EMA Fast", minval=2, group="Indicators")
+emaSlowLen      = input.int(21, "EMA Slow", minval=5, group="Indicators")
+rsiLen          = input.int(14, "RSI Length", minval=2, group="Indicators")
+rsiBullMin      = input.int(52, "RSI Bull Min (Conservative)", minval=40, maxval=70, group="Indicators")
+rsiBearMax      = input.int(48, "RSI Bear Max (Conservative)", minval=30, maxval=60, group="Indicators")
+rsiBullMinAgg   = input.int(48, "RSI Bull Min (Aggressive)", minval=40, maxval=70, group="Indicators")
+rsiBearMaxAgg   = input.int(52, "RSI Bear Max (Aggressive)", minval=30, maxval=60, group="Indicators")
+volSpikeMult    = input.float(1.5, "Volume Spike Multiplier", minval=1.0, step=0.1, group="Indicators")
+atrLen          = input.int(14, "ATR Length", minval=1, group="Risk")
+atrStopMult     = input.float(1.2, "ATR Stop Multiplier", minval=0.5, step=0.1, group="Risk")
+atrTargetMult   = input.float(1.8, "ATR Target Multiplier", minval=0.5, step=0.1, group="Risk")
+tradeMorning    = input.bool(true, "Morning Session", group="Session")
+morningStart    = input.session("0935-1130", "Morning Window (ET)", group="Session")
+tradeAfternoon  = input.bool(false, "Afternoon Session", group="Session")
+afternoonStart  = input.session("1330-1530", "Afternoon Window (ET)", group="Session")
+skipLunch       = input.bool(true, "No-Trade Lunch Filter", group="Session")
+lunchSession    = input.session("1130-1330", "Lunch Block (ET)", group="Session")
+showLabels      = input.bool(true, "Show Signal Labels", group="Display")
+
+// ─── Time / Session ───────────────────────────────────────────────────────────
+tz = "America/New_York"
+inMorning     = not na(time(timeframe.period, morningStart, tz))
+inAfternoon   = not na(time(timeframe.period, afternoonStart, tz))
+inLunch       = skipLunch and not na(time(timeframe.period, lunchSession, tz))
+inTradeWindow = (tradeMorning and inMorning) or (tradeAfternoon and inAfternoon)
+sessionOK     = inTradeWindow and not inLunch
+
+// ─── Indicators ───────────────────────────────────────────────────────────────
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+vwapVal = ta.vwap(hlc3)
+rsiVal  = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+atrVal  = ta.atr(atrLen)
+volSMA  = ta.sma(volume, 20)
+volSpike = volume > volSMA * volSpikeMult
+
+// Trend / filters
+bullTrend = emaFast > emaSlow and close > vwapVal
+bearTrend = emaFast < emaSlow and close < vwapVal
+macdBull  = macdHist > 0 and macdLine > macdSignal
+macdBear  = macdHist < 0 and macdLine < macdSignal
+
+rsiBullTh = entryMode == "Aggressive" ? rsiBullMinAgg : rsiBullMin
+rsiBearTh = entryMode == "Aggressive" ? rsiBearMaxAgg : rsiBearMax
+rsiBullOK = rsiVal >= rsiBullTh
+rsiBearOK = rsiVal <= rsiBearTh
+
+// Opening range (first N minutes of RTH)
+isNewDay = ta.change(dayofweek) != 0 or ta.change(dayofmonth) != 0
+var float orbHigh = na
+var float orbLow  = na
+var int   orbBars = 0
+barsSinceOpen = ta.barssince(session.isfirstbar_regular)
+if session.isfirstbar_regular
+    orbHigh := high
+    orbLow  := low
+    orbBars := 1
+else if orbBars > 0 and orbBars < orbMinutes
+    orbHigh := math.max(orbHigh, high)
+    orbLow  := math.min(orbLow, low)
+    orbBars += 1
+orbReady = orbBars >= orbMinutes
+orbBreakUp   = useORB and orbReady and close > orbHigh and close[1] <= orbHigh
+orbBreakDown = useORB and orbReady and close < orbLow and close[1] >= orbLow
+
+// Entry conditions (no simultaneous long/short — pyramiding=0)
+conservativeLong = bullTrend and rsiBullOK and macdBull and volSpike and sessionOK
+conservativeShort = bearTrend and rsiBearOK and macdBear and volSpike and sessionOK
+aggressiveLong = bullTrend and (rsiBullOK or macdBull) and (volSpike or orbBreakUp) and sessionOK
+aggressiveShort = bearTrend and (rsiBearOK or macdBear) and (volSpike or orbBreakDown) and sessionOK
+
+longSignal  = entryMode == "Aggressive" ? aggressiveLong : conservativeLong
+shortSignal = entryMode == "Aggressive" ? aggressiveShort : conservativeShort
+
+if longSignal and strategy.position_size <= 0
+    strategy.entry("LongCall", strategy.long)
+if shortSignal and strategy.position_size >= 0
+    strategy.entry("LongPut", strategy.short)
+
+// ATR exits
+longStop  = strategy.position_avg_price - atrVal * atrStopMult
+longLimit = strategy.position_avg_price + atrVal * atrTargetMult
+shortStop  = strategy.position_avg_price + atrVal * atrStopMult
+shortLimit = strategy.position_avg_price - atrVal * atrTargetMult
+
+strategy.exit("ExitLong", "LongCall", stop=longStop, limit=longLimit)
+strategy.exit("ExitShort", "LongPut", stop=shortStop, limit=shortLimit)
+
+// Flatten outside session
+if not sessionOK and strategy.position_size != 0
+    strategy.close_all(comment="SessionEnd")
+
+// ─── State strings for webhook JSON ───────────────────────────────────────────
+biasStr = bullTrend ? "bullish" : bearTrend ? "bearish" : "neutral"
+macdState = macdBull ? "bullish" : macdBear ? "bearish" : "neutral"
+volState = volSpike ? "spike" : "normal"
+vwapState = close > vwapVal ? "above" : close < vwapVal ? "below" : "at"
+
+// ─── Plots ────────────────────────────────────────────────────────────────────
+plot(emaFast, "EMA 9", color=color.new(color.teal, 0))
+plot(emaSlow, "EMA 21", color=color.new(color.orange, 0))
+plot(vwapVal, "VWAP", color=color.new(color.purple, 30), linewidth=2)
+plot(useORB and orbReady ? orbHigh : na, "ORB High", color=color.new(color.green, 50), style=plot.style_linebr)
+plot(useORB and orbReady ? orbLow : na, "ORB Low", color=color.new(color.red, 50), style=plot.style_linebr)
+
+plotshape(showLabels and longSignal, title="Long Call Setup", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, text="CALL")
+plotshape(showLabels and shortSignal, title="Long Put Setup", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, text="PUT")
+
+// ─── Alert JSON (use in TradingView alert message; placeholders filled at fire time) ───
+// Create alert: condition = strategy order fills OR alert() on signal; webhook URL in alert settings.
+alertMsg = '{"ticker":"{{ticker}}","time":"{{timenow}}","price":"{{close}}","interval":"{{interval}}","action":"{{strategy.order.action}}","market_position":"{{strategy.market_position}}","setup":"SPY_0DTE_SCALP","bias":"' + biasStr + '","rsi":"' + str.tostring(rsiVal, "#.##") + '","ema_fast":"' + str.tostring(emaFast, "#.##") + '","ema_slow":"' + str.tostring(emaSlow, "#.##") + '","macd_state":"' + macdState + '","volume_state":"' + volState + '","vwap_state":"' + vwapState + '","atr":"' + str.tostring(atrVal, "#.##") + '","entry_mode":"' + entryMode + '"}'
+
+if longSignal or shortSignal
+    alert(alertMsg, alert.freq_once_per_bar_close)

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/dashboard/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>SPY 0DTE Scalper</h1>
+    <p class="subtitle">Filter and score trade opportunities in real time — paper mode default</p>
+    <p id="health-status">Loading…</p>
+  </header>
+
+  <section class="cards" id="summary-cards"></section>
+
+  <div class="grid">
+    <section>
+      <h2>Recent Alerts</h2>
+      <table id="alerts-table"><thead><tr><th>Time</th><th>Ticker</th><th>Bias</th><th>RSI</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section>
+      <h2>AI Decisions</h2>
+      <table id="decisions-table"><thead><tr><th>Time</th><th>Decision</th><th>Dir</th><th>Conf</th><th>Sentiment</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section>
+      <h2>Positions</h2>
+      <table id="positions-table"><thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>PnL</th><th>Status</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section>
+      <h2>Rejection Reasons</h2>
+      <ul id="rejections-list"></ul>
+    </section>
+    <section>
+      <h2>0DTE Performance by Time of Day</h2>
+      <pre id="tod-chart"></pre>
+    </section>
+    <section>
+      <h2>News Sentiment Heatmap</h2>
+      <pre id="sentiment-heatmap"></pre>
+    </section>
+    <section>
+      <h2>Regime Analytics</h2>
+      <pre id="regime-stats"></pre>
+    </section>
+  </p>
+
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

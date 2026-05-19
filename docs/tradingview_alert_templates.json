@@ -1,0 +1,42 @@
+{
+  "description": "Sample TradingView alert JSON templates for SPY 0DTE Scalper webhook",
+  "webhook_url_note": "Configure webhook URL in TradingView alert dialog — NOT in Pine Script",
+  "templates": {
+    "strategy_order_fill": {
+      "ticker": "{{ticker}}",
+      "time": "{{timenow}}",
+      "price": "{{close}}",
+      "interval": "{{interval}}",
+      "action": "{{strategy.order.action}}",
+      "market_position": "{{strategy.market_position}}",
+      "setup": "SPY_0DTE_SCALP",
+      "bias": "bullish",
+      "rsi": "55.2",
+      "ema_fast": "501.25",
+      "ema_slow": "500.10",
+      "macd_state": "bullish",
+      "volume_state": "spike",
+      "vwap_state": "above",
+      "atr": "1.15",
+      "entry_mode": "Conservative"
+    },
+    "bearish_put_example": {
+      "ticker": "SPY",
+      "time": "2026-05-19T10:15:00-04:00",
+      "price": "498.50",
+      "interval": "5",
+      "action": "sell",
+      "market_position": "short",
+      "setup": "SPY_0DTE_SCALP",
+      "bias": "bearish",
+      "rsi": "42.0",
+      "ema_fast": "497.80",
+      "ema_slow": "499.20",
+      "macd_state": "bearish",
+      "volume_state": "spike",
+      "vwap_state": "below",
+      "atr": "1.30"
+    }
+  },
+  "curl_test": "curl -X POST http://localhost:8000/webhook/tradingview -H 'Content-Type: application/json' -d @docs/sample_webhook.json"
+}

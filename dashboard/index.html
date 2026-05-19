@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SPY 0DTE AI Scalper Dashboard</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; background: #0d1117; color: #e6edf3; }
+      h1, h2 { margin-bottom: 8px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+      .card { border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #161b22; }
+      .card .value { font-size: 1.2rem; font-weight: bold; margin-top: 6px; }
+      table { width: 100%; border-collapse: collapse; margin-bottom: 18px; }
+      th, td { border: 1px solid #30363d; padding: 8px; text-align: left; font-size: 0.9rem; }
+      th { background: #21262d; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow-x: auto; }
+      @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <h1>SPY 0DTE / 1DTE AI Trade Filter</h1>
+    <p>TradingView alert feed, AI/news scoring, risk gating, paper execution analytics.</p>
+
+    <div id="summary" class="grid"></div>
+
+    <div class="row">
+      <section>
+        <h2>Recent Alerts</h2>
+        <table id="alerts-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Symbol</th><th>Action</th><th>Bias</th><th>Decision</th><th>Time</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Open Positions</h2>
+        <table id="open-positions-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Contract</th><th>Dir</th><th>Qty</th><th>Entry</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+
+    <div class="row">
+      <section>
+        <h2>Rejection Analytics</h2>
+        <pre id="rejections"></pre>
+      </section>
+      <section>
+        <h2>Regime Analytics</h2>
+        <pre id="regime"></pre>
+      </section>
+    </div>
+
+    <div class="row">
+      <section>
+        <h2>Time-of-day Performance</h2>
+        <pre id="time-of-day"></pre>
+      </section>
+      <section>
+        <h2>News Sentiment Heatmap</h2>
+        <pre id="sentiment-heatmap"></pre>
+      </section>
+    </div>
+
+    <script>
+      async function fetchJson(path) {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`Failed ${path}`);
+        return response.json();
+      }
+
+      function renderSummary(summary) {
+        const root = document.getElementById("summary");
+        root.innerHTML = "";
+        const labels = [
+          ["Alerts", summary.alerts_total],
+          ["Approved", summary.approved],
+          ["Rejected", summary.rejected],
+          ["WAIT", summary.wait],
+          ["REDUCE_SIZE", summary.reduce_size],
+          ["Open Positions", summary.open_positions],
+          ["Closed Positions", summary.closed_positions],
+          ["PnL", summary.realized_pnl],
+          ["Win Rate %", summary.win_rate],
+          ["Max Drawdown", summary.max_drawdown],
+        ];
+        labels.forEach(([label, value]) => {
+          const card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML = `<div>${label}</div><div class="value">${value}</div>`;
+          root.appendChild(card);
+        });
+      }
+
+      function renderAlerts(items) {
+        const tbody = document.querySelector("#alerts-table tbody");
+        tbody.innerHTML = "";
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${item.id}</td>
+            <td>${item.symbol}</td>
+            <td>${item.action}</td>
+            <td>${item.bias}</td>
+            <td>${item.decision.decision}</td>
+            <td>${new Date(item.received_at).toLocaleString()}</td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      function renderOpenPositions(items) {
+        const tbody = document.querySelector("#open-positions-table tbody");
+        tbody.innerHTML = "";
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td>${item.id}</td>
+            <td>${item.contract_symbol}</td>
+            <td>${item.direction}</td>
+            <td>${item.quantity}</td>
+            <td>${item.entry_price}</td>
+            <td>${item.status}</td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      async function refresh() {
+        const [summary, alerts, openPos, rejection, regime, timeOfDay, heatmap] = await Promise.all([
+          fetchJson("/dashboard-api/summary"),
+          fetchJson("/dashboard-api/alerts?limit=30"),
+          fetchJson("/dashboard-api/positions/open"),
+          fetchJson("/dashboard-api/analytics/rejections"),
+          fetchJson("/dashboard-api/analytics/regime"),
+          fetchJson("/dashboard-api/analytics/time-of-day"),
+          fetchJson("/dashboard-api/analytics/sentiment-heatmap"),
+        ]);
+        renderSummary(summary);
+        renderAlerts(alerts);
+        renderOpenPositions(openPos);
+        document.getElementById("rejections").textContent = JSON.stringify(rejection, null, 2);
+        document.getElementById("regime").textContent = JSON.stringify(regime, null, 2);
+        document.getElementById("time-of-day").textContent = JSON.stringify(timeOfDay, null, 2);
+        document.getElementById("sentiment-heatmap").textContent = JSON.stringify(heatmap, null, 2);
+      }
+
+      refresh();
+      setInterval(refresh, 5000);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,133 @@
+//@version=5
+strategy("SPY 0DTE AI Scalper (Webhook Ready)", overlay=true, initial_capital=100000, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.01, calc_on_every_tick=true)
+
+// ----------------------------
+// Inputs
+// ----------------------------
+entry_mode = input.string("standard", "Entry Preset", options=["conservative", "standard", "aggressive"])
+use_orb = input.bool(true, "Use Opening Range Breakout Filter")
+orb_minutes = input.int(5, "Opening Range Minutes", minval=1, maxval=30)
+volume_spike_mult = input.float(1.2, "Volume Spike Multiplier", minval=0.5, step=0.1)
+allow_afternoon = input.bool(true, "Allow Afternoon Session")
+session_morning = input.session("0935-1130", "Morning Session (ET)")
+session_afternoon = input.session("1330-1530", "Afternoon Session (ET)")
+disable_lunch = input.bool(true, "Disable Lunch (11:30-13:30 ET)")
+
+// Preset-dependent thresholds
+rsi_bull_threshold = entry_mode == "conservative" ? 55 : entry_mode == "aggressive" ? 50 : 52
+rsi_bear_threshold = entry_mode == "conservative" ? 45 : entry_mode == "aggressive" ? 50 : 48
+atr_stop_mult = entry_mode == "conservative" ? 1.3 : entry_mode == "aggressive" ? 0.8 : 1.0
+atr_target_mult = entry_mode == "conservative" ? 2.2 : entry_mode == "aggressive" ? 1.3 : 1.7
+
+// ----------------------------
+// Indicators
+// ----------------------------
+ema_fast = ta.ema(close, 9)
+ema_slow = ta.ema(close, 21)
+vwap_val = ta.vwap(hlc3)
+rsi_val = ta.rsi(close, 14)
+[macd_line, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
+atr_val = ta.atr(14)
+vol_sma = ta.sma(volume, 20)
+
+// ----------------------------
+// Session / Time filters
+// ----------------------------
+in_morning = not na(time(timeframe.period, session_morning, "America/New_York"))
+in_afternoon = allow_afternoon and not na(time(timeframe.period, session_afternoon, "America/New_York"))
+in_trade_session = in_morning or in_afternoon
+
+bar_hour = hour(time, "America/New_York")
+bar_min = minute(time, "America/New_York")
+bar_hhmm = bar_hour * 100 + bar_min
+lunch_window = disable_lunch and bar_hhmm >= 1130 and bar_hhmm < 1330
+
+// ----------------------------
+// Opening range breakout logic
+// ----------------------------
+is_new_day = ta.change(dayofmonth(time, "America/New_York"))
+var float orb_high = na
+var float orb_low = na
+var int orb_start_ts = na
+if is_new_day
+    orb_high := na
+    orb_low := na
+    orb_start_ts := na
+
+in_regular_open = bar_hhmm >= 930 and bar_hhmm < (930 + orb_minutes)
+if in_regular_open
+    orb_high := na(orb_high) ? high : math.max(orb_high, high)
+    orb_low := na(orb_low) ? low : math.min(orb_low, low)
+
+orb_bull_break = not use_orb or (not na(orb_high) and close > orb_high)
+orb_bear_break = not use_orb or (not na(orb_low) and close < orb_low)
+
+// ----------------------------
+// Signal filters
+// ----------------------------
+bull_trend = ema_fast > ema_slow and close > vwap_val
+bear_trend = ema_fast < ema_slow and close < vwap_val
+rsi_bull_ok = rsi_val >= rsi_bull_threshold
+rsi_bear_ok = rsi_val <= rsi_bear_threshold
+macd_bull_ok = macd_line > macd_signal and macd_hist > 0
+macd_bear_ok = macd_line < macd_signal and macd_hist < 0
+volume_spike = volume > vol_sma * volume_spike_mult
+
+session_ok = in_trade_session and not lunch_window
+bullish_setup = session_ok and bull_trend and rsi_bull_ok and macd_bull_ok and volume_spike and orb_bull_break
+bearish_setup = session_ok and bear_trend and rsi_bear_ok and macd_bear_ok and volume_spike and orb_bear_break
+
+// Avoid conflicting long/short state
+long_call_signal = bullish_setup and not bearish_setup and strategy.position_size <= 0
+long_put_signal = bearish_setup and not bullish_setup and strategy.position_size >= 0
+
+// ----------------------------
+// JSON alert builder (TradingView webhook message)
+// ----------------------------
+macd_state = macd_hist > 0 ? "bullish_momentum" : macd_hist < 0 ? "bearish_momentum" : "flat"
+volume_state = volume_spike ? "spike" : "normal"
+vwap_state = close > vwap_val ? "above_vwap" : "below_vwap"
+
+build_alert_json(action, bias) =>
+    "{" +
+      "\"ticker\":\"{{ticker}}\"," +
+      "\"time\":\"{{timenow}}\"," +
+      "\"price\":\"{{close}}\"," +
+      "\"interval\":\"{{interval}}\"," +
+      "\"action\":\"" + action + "\"," +
+      "\"market_position\":\"{{strategy.market_position}}\"," +
+      "\"setup\":\"SPY_0DTE_SCALP\"," +
+      "\"bias\":\"" + bias + "\"," +
+      "\"rsi\":\"" + str.tostring(rsi_val, "#.##") + "\"," +
+      "\"ema_fast\":\"" + str.tostring(ema_fast, "#.####") + "\"," +
+      "\"ema_slow\":\"" + str.tostring(ema_slow, "#.####") + "\"," +
+      "\"macd_state\":\"" + macd_state + "\"," +
+      "\"volume_state\":\"" + volume_state + "\"," +
+      "\"vwap_state\":\"" + vwap_state + "\"," +
+      "\"opening_range_breakout\":\"" + str.tostring(use_orb ? (bias == "bullish" ? orb_bull_break : orb_bear_break) : true) + "\"," +
+      "\"atr\":\"" + str.tostring(atr_val, "#.####") + "\"" +
+    "}"
+
+if long_call_signal
+    strategy.entry("LONG_CALL_PROXY", strategy.long, alert_message=build_alert_json("BUY_CALL", "bullish"))
+    alert(build_alert_json("BUY_CALL", "bullish"), alert.freq_once_per_bar_close)
+
+if long_put_signal
+    strategy.entry("LONG_PUT_PROXY", strategy.short, alert_message=build_alert_json("BUY_PUT", "bearish"))
+    alert(build_alert_json("BUY_PUT", "bearish"), alert.freq_once_per_bar_close)
+
+if strategy.position_size > 0
+    long_stop = strategy.position_avg_price - atr_val * atr_stop_mult
+    long_target = strategy.position_avg_price + atr_val * atr_target_mult
+    strategy.exit("LONG_CALL_EXIT", "LONG_CALL_PROXY", stop=long_stop, limit=long_target, alert_message=build_alert_json("EXIT_CALL", "bullish"))
+
+if strategy.position_size < 0
+    short_stop = strategy.position_avg_price + atr_val * atr_stop_mult
+    short_target = strategy.position_avg_price - atr_val * atr_target_mult
+    strategy.exit("LONG_PUT_EXIT", "LONG_PUT_PROXY", stop=short_stop, limit=short_target, alert_message=build_alert_json("EXIT_PUT", "bearish"))
+
+plot(ema_fast, color=color.new(color.aqua, 0), title="EMA 9")
+plot(ema_slow, color=color.new(color.orange, 0), title="EMA 21")
+plot(vwap_val, color=color.new(color.fuchsia, 0), title="VWAP")
+plotshape(long_call_signal, title="Call Signal", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(long_put_signal, title="Put Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)

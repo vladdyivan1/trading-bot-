@@ -191,7 +191,7 @@ class DecisionPipeline:
                     entry_price=broker_result.fill_price,
                     spread_pct=broker_result.spread_pct,
                     max_hold_minutes=settings.max_hold_minutes_default,
-                    metadata=broker_result.metadata or {},
+                    execution_metadata=broker_result.metadata or {},
                 )
                 pending_exec_row = exec_row
 

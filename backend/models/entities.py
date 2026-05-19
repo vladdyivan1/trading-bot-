@@ -71,7 +71,7 @@ class ExecutionRecord(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     exit_price: Mapped[float | None] = mapped_column(Float)
     pnl: Mapped[float] = mapped_column(Float, default=0.0)
-    metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    execution_metadata: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
     alert_event: Mapped["AlertEvent"] = relationship(back_populates="executions")
 

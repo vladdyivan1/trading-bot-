@@ -1,0 +1,244 @@
+//@version=5
+indicator(
+     title="SPY Options Scalp Stack",
+     shorttitle="SPY Scalp",
+     overlay=true,
+     max_labels_count=500,
+     max_lines_count=500)
+
+// ── Timeframe & session ───────────────────────────────────────────────────────
+grpTf       = "Timeframes"
+execTf      = input.timeframe("5", "Execution chart TF (info)", group=grpTf, tooltip="Apply this script on 1m or 5m SPY. Lower-TF RSI/MACD are pulled automatically.")
+rsiTf       = input.timeframe("1", "Lower-TF momentum (RSI/MACD)", group=grpTf)
+biasTf15    = input.timeframe("15", "HTF bias #1", group=grpTf)
+biasTf60    = input.timeframe("60", "HTF bias #2", group=grpTf)
+sessionOnly = input.bool(true, "Signals only during RTH (9:30–16:00 ET)", group=grpTf)
+
+grpCore     = "Core stack"
+showVwap    = input.bool(true, "Plot VWAP", group=grpCore)
+emaFastLen  = input.int(9, "Fast EMA", minval=1, group=grpCore)
+emaSlowLen  = input.int(20, "Slow EMA", minval=2, group=grpCore)
+showMa50    = input.bool(false, "Plot 50 MA (structure)", group=grpCore)
+showMa200   = input.bool(false, "Plot 200 MA (structure)", group=grpCore)
+rsiLen      = input.int(14, "RSI length", minval=2, group=grpCore)
+volMaLen    = input.int(10, "Volume MA length", minval=2, group=grpCore)
+volMult     = input.float(1.0, "Volume spike vs MA", minval=0.5, step=0.1, group=grpCore)
+
+grpVol      = "Volatility / sentiment"
+useVix      = input.bool(true, "Require VIX filter (Setup 2)", group=grpVol)
+vixSymbol   = input.symbol("CBOE:VIX", "VIX symbol", group=grpVol)
+vixMin      = input.float(16.0, "Min VIX for impulse scalps", minval=0, step=0.5, group=grpVol)
+useTick     = input.bool(true, "Use NYSE TICK (Setup 2)", group=grpVol)
+tickSymbol  = input.symbol("USI:TICK", "TICK symbol", group=grpVol)
+tickFloor   = input.int(-600, "TICK long floor (not worse than)", group=grpVol)
+tickCeil    = input.int(600, "TICK short ceiling (not better than)", group=grpVol)
+tickMid     = input.int(-200, "TICK mid-line (cross trigger)", group=grpVol)
+
+grpS1       = "Setup 1 — VWAP trend pullback"
+enableS1    = input.bool(true, "Enable Setup 1", group=grpS1)
+s1Pullback  = input.float(0.15, "Pullback touch tolerance (ATR x)", minval=0.05, step=0.05, group=grpS1)
+s1RsiLongLo = input.int(40, "Long RSI dip zone low", minval=0, maxval=100, group=grpS1)
+s1RsiLongHi = input.int(50, "Long RSI dip zone high", minval=0, maxval=100, group=grpS1)
+
+grpS2       = "Setup 2 — VIX + TICK impulse"
+enableS2    = input.bool(true, "Enable Setup 2", group=grpS2)
+s2VolBars   = input.int(3, "Volume > prior N bars", minval=1, maxval=10, group=grpS2)
+
+grpS3       = "Setup 3 — VP ledge reversal"
+enableS3    = input.bool(true, "Enable Setup 3", group=grpS3)
+ledgeHigh   = input.float(na, "Ledge high (manual VP zone top)", group=grpS3)
+ledgeLow    = input.float(na, "Ledge low (manual VP zone bottom)", group=grpS3)
+ledgeWidth  = input.float(0.25, "Ledge zone width ($)", minval=0.05, step=0.05, group=grpS3)
+s3RsiOb     = input.int(70, "Overbought RSI", minval=50, maxval=100, group=grpS3)
+s3RsiOs     = input.int(30, "Oversold RSI", minval=0, maxval=50, group=grpS3)
+s3VolMult   = input.float(1.5, "Exhaustion volume vs MA", minval=1.0, step=0.1, group=grpS3)
+
+grpPanel    = "Panel & markers"
+showPanel   = input.bool(true, "Show confluence panel", group=grpPanel)
+showMarks   = input.bool(true, "Show setup markers", group=grpPanel)
+
+// ── Session filter ────────────────────────────────────────────────────────────
+inSession = not sessionOnly or not na(time(timeframe.period, "0930-1600:23456", "America/New_York"))
+
+// ── Core indicators (chart TF) ────────────────────────────────────────────────
+vwapVal   = ta.vwap(hlc3)
+emaFast   = ta.ema(close, emaFastLen)
+emaSlow   = ta.ema(close, emaSlowLen)
+ma50      = ta.sma(close, 50)
+ma200     = ta.sma(close, 200)
+atrVal    = ta.atr(14)
+volMa     = ta.sma(volume, volMaLen)
+
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+macdTurnUp   = macdHist > macdHist[1] and macdHist[1] <= macdHist[2]
+macdTurnDown = macdHist < macdHist[1] and macdHist[1] >= macdHist[2]
+
+// Lower-TF momentum
+rsiLow    = request.security(syminfo.tickerid, rsiTf, ta.rsi(close, rsiLen), barmerge.gaps_off, barmerge.lookahead_off)
+rsiCrossUp   = request.security(syminfo.tickerid, rsiTf, ta.crossover(ta.rsi(close, rsiLen), 50), barmerge.gaps_off, barmerge.lookahead_off)
+rsiCrossDown = request.security(syminfo.tickerid, rsiTf, ta.crossunder(ta.rsi(close, rsiLen), 50), barmerge.gaps_off, barmerge.lookahead_off)
+[_, _, histLow] = request.security(syminfo.tickerid, rsiTf, ta.macd(close, 12, 26, 9), barmerge.gaps_off, barmerge.lookahead_off)
+histLowTurnUp   = histLow > histLow[1] and histLow[1] <= histLow[2]
+histLowTurnDown = histLow < histLow[1] and histLow[1] >= histLow[2]
+
+// HTF bias
+htf15Close = request.security(syminfo.tickerid, biasTf15, close, barmerge.gaps_off, barmerge.lookahead_off)
+htf15Ema20 = request.security(syminfo.tickerid, biasTf15, ta.ema(close, 20), barmerge.gaps_off, barmerge.lookahead_off)
+htf60Close = request.security(syminfo.tickerid, biasTf60, close, barmerge.gaps_off, barmerge.lookahead_off)
+htf60Ema20 = request.security(syminfo.tickerid, biasTf60, ta.ema(close, 20), barmerge.gaps_off, barmerge.lookahead_off)
+
+htfUp   = htf15Close > htf15Ema20 and htf60Close > htf60Ema20
+htfDown = htf15Close < htf15Ema20 and htf60Close < htf60Ema20
+
+// VIX / TICK
+vixClose = request.security(vixSymbol, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+tickNow  = request.security(tickSymbol, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+tickPrev = request.security(tickSymbol, timeframe.period, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+vixOk    = not useVix or vixClose >= vixMin
+
+// ── Shared confluence helpers ─────────────────────────────────────────────────
+uptrend   = close > vwapVal and close > emaSlow and emaFast > emaSlow
+downtrend = close < vwapVal and close < emaSlow and emaFast < emaSlow
+
+volSpike(baseMult) =>
+    volume > volMa * baseMult and volume > volume[1] and volume > volume[2] and volume > volume[3]
+
+volPriorBars(n) =>
+    ok = volume > volume[1]
+    ok := n >= 2 ? ok and volume > volume[2] : ok
+    ok := n >= 3 ? ok and volume > volume[3] : ok
+    ok := n >= 4 ? ok and volume > volume[4] : ok
+    ok := n >= 5 ? ok and volume > volume[5] : ok
+    ok := n >= 6 ? ok and volume > volume[6] : ok
+    ok := n >= 7 ? ok and volume > volume[7] : ok
+    ok := n >= 8 ? ok and volume > volume[8] : ok
+    ok := n >= 9 ? ok and volume > volume[9] : ok
+    ok := n >= 10 ? ok and volume > volume[10] : ok
+    ok
+
+volSpikeS2 = volume > volMa and volPriorBars(s2VolBars)
+
+// ── Setup 1: VWAP trend pullback ──────────────────────────────────────────────
+touchBand = atrVal * s1Pullback
+pullbackLong  = uptrend and low <= emaFast + touchBand and low >= emaSlow - touchBand and close > vwapVal
+pullbackShort = downtrend and high >= emaFast - touchBand and high <= emaSlow + touchBand and close < vwapVal
+
+rsiDippedLong  = rsiLow[1] >= s1RsiLongLo and rsiLow[1] <= s1RsiLongHi
+rsiDippedShort = rsiLow[1] <= (100 - s1RsiLongLo) and rsiLow[1] >= (100 - s1RsiLongHi)
+
+s1Long  = enableS1 and inSession and htfUp and pullbackLong and rsiDippedLong and (rsiCrossUp or histLowTurnUp) and volSpike(volMult)
+s1Short = enableS1 and inSession and htfDown and pullbackShort and rsiDippedShort and (rsiCrossDown or histLowTurnDown) and volSpike(volMult)
+
+// ── Setup 2: VIX + TICK impulse ───────────────────────────────────────────────
+tickLongOk  = not useTick or (tickNow > tickMid and tickNow > tickPrev and tickNow > tickFloor)
+tickShortOk = not useTick or (tickNow < -tickMid and tickNow < tickPrev and tickNow < tickCeil)
+
+s2Long  = enableS2 and inSession and vixOk and uptrend and tickLongOk and rsiCrossUp and close > emaSlow and volSpikeS2
+s2Short = enableS2 and inSession and vixOk and downtrend and tickShortOk and rsiCrossDown and close < emaSlow and volSpikeS2
+
+// ── Setup 3: VP ledge reversal ────────────────────────────────────────────────
+hasLedgeHigh = not na(ledgeHigh)
+hasLedgeLow  = not na(ledgeLow)
+atLedgeHigh  = hasLedgeHigh and high >= ledgeHigh - ledgeWidth and high <= ledgeHigh + ledgeWidth
+atLedgeLow   = hasLedgeLow and low <= ledgeLow + ledgeWidth and low >= ledgeLow - ledgeWidth
+
+body      = math.abs(close - open)
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+bearReject = upperWick > body * 1.5 and close < open and close < high[1]
+bullReject = lowerWick > body * 1.5 and close > open and close > low[1]
+insidePrior = close < high[1] and close > low[1]
+
+s3Short = enableS3 and inSession and hasLedgeHigh and atLedgeHigh[1] and ta.rsi(close, rsiLen) > s3RsiOb and (bearReject or macdTurnDown) and insidePrior and volume > volMa * s3VolMult
+s3Long  = enableS3 and inSession and hasLedgeLow and atLedgeLow[1] and ta.rsi(close, rsiLen) < s3RsiOs and (bullReject or macdTurnUp) and insidePrior and volume > volMa * s3VolMult
+
+// ── Combined confluence signals ───────────────────────────────────────────────
+anyLong  = s1Long or s2Long or s3Long
+anyShort = s1Short or s2Short or s3Short
+
+// ── Plots ─────────────────────────────────────────────────────────────────────
+plot(showVwap ? vwapVal : na, "VWAP", color=color.new(#2962FF, 0), linewidth=2)
+plot(emaFast, "EMA 9", color=color.new(color.teal, 0), linewidth=1)
+plot(emaSlow, "EMA 20", color=color.new(color.orange, 0), linewidth=2)
+plot(showMa50 ? ma50 : na, "MA 50", color=color.new(color.gray, 40))
+plot(showMa200 ? ma200 : na, "MA 200", color=color.new(color.gray, 60))
+
+plot(hasLedgeHigh ? ledgeHigh : na, "Ledge high", color=color.new(color.red, 50), style=plot.style_linebr, linewidth=2)
+plot(hasLedgeLow ? ledgeLow : na, "Ledge low", color=color.new(color.lime, 50), style=plot.style_linebr, linewidth=2)
+
+bgcolor(uptrend ? color.new(color.green, 94) : downtrend ? color.new(color.red, 94) : na)
+
+plotshape(showMarks and s1Long, "S1 Long", shape.triangleup, location.belowbar, color.new(color.lime, 0), size=size.small, text="S1")
+plotshape(showMarks and s1Short, "S1 Short", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small, text="S1")
+plotshape(showMarks and s2Long and not s1Long, "S2 Long", shape.circle, location.belowbar, color.new(color.aqua, 0), size=size.tiny, text="S2")
+plotshape(showMarks and s2Short and not s1Short, "S2 Short", shape.circle, location.abovebar, color.new(color.fuchsia, 0), size=size.tiny, text="S2")
+plotshape(showMarks and s3Long and not s1Long and not s2Long, "S3 Long", shape.diamond, location.belowbar, color.new(color.yellow, 0), size=size.tiny, text="S3")
+plotshape(showMarks and s3Short and not s1Short and not s2Short, "S3 Short", shape.diamond, location.abovebar, color.new(color.orange, 0), size=size.tiny, text="S3")
+
+// ── Confluence panel ──────────────────────────────────────────────────────────
+var table panel = table.new(position.top_right, 2, 12, border_width=1)
+
+if showPanel and barstate.islast
+    hdr = color.new(#1e293b, 0)
+    lbl = color.new(#0f172a, 10)
+    val = color.new(#0f172a, 0)
+    upC = color.lime
+    dnC = color.red
+    neu = color.gray
+
+    table.cell(panel, 0, 0, "SPY Scalp Stack", text_color=color.white, bgcolor=hdr)
+    table.cell(panel, 1, 0, syminfo.ticker + " " + timeframe.period, text_color=color.white, bgcolor=hdr)
+
+    table.cell(panel, 0, 1, "HTF bias", text_color=color.white, bgcolor=lbl)
+    biasTxt = htfUp ? "BULL (15m+60m)" : htfDown ? "BEAR (15m+60m)" : "MIXED"
+    biasClr = htfUp ? upC : htfDown ? dnC : neu
+    table.cell(panel, 1, 1, biasTxt, text_color=biasClr, bgcolor=val)
+
+    table.cell(panel, 0, 2, "Trend (VWAP+EMA)", text_color=color.white, bgcolor=lbl)
+    trTxt = uptrend ? "UP" : downtrend ? "DOWN" : "CHOP"
+    table.cell(panel, 1, 2, trTxt, text_color=uptrend ? upC : downtrend ? dnC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 3, "RSI (" + rsiTf + ")", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 3, str.tostring(rsiLow, "#.#"), text_color=rsiLow >= 50 ? upC : dnC, bgcolor=val)
+
+    table.cell(panel, 0, 4, "VIX", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 4, str.tostring(vixClose, "#.##") + (vixOk ? " OK" : " LOW"), text_color=vixOk ? upC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 5, "TICK", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 5, str.tostring(tickNow, "#"), text_color=tickNow > 0 ? upC : tickNow < 0 ? dnC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 6, "Volume", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 6, volume > volMa * volMult ? "SPIKE" : "Normal", text_color=volume > volMa * volMult ? upC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 7, "Setup 1", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 7, s1Long ? "LONG" : s1Short ? "SHORT" : "—", text_color=s1Long ? upC : s1Short ? dnC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 8, "Setup 2", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 8, s2Long ? "LONG" : s2Short ? "SHORT" : "—", text_color=s2Long ? upC : s2Short ? dnC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 9, "Setup 3", text_color=color.white, bgcolor=lbl)
+    s3Txt = not hasLedgeHigh and not hasLedgeLow ? "Set ledge inputs" : s3Long ? "LONG" : s3Short ? "SHORT" : "—"
+    table.cell(panel, 1, 9, s3Txt, text_color=s3Long ? upC : s3Short ? dnC : neu, bgcolor=val)
+
+    table.cell(panel, 0, 10, "Confluence", text_color=color.white, bgcolor=lbl)
+    confTxt = anyLong ? "LONG ALERT" : anyShort ? "SHORT ALERT" : "Wait"
+    confClr = anyLong ? upC : anyShort ? dnC : neu
+    table.cell(panel, 1, 10, confTxt, text_color=confClr, bgcolor=val)
+
+    table.cell(panel, 0, 11, "Session", text_color=color.white, bgcolor=lbl)
+    table.cell(panel, 1, 11, inSession ? "RTH active" : "Outside RTH", text_color=inSession ? upC : neu, bgcolor=val)
+
+// ── Alerts (confluence — not single-indicator) ────────────────────────────────
+alertcondition(s1Long, "S1 Trend pullback LONG", "SPY S1: VWAP trend pullback LONG — HTF bull, pullback to EMA, RSI reclaim, volume spike")
+alertcondition(s1Short, "S1 Trend pullback SHORT", "SPY S1: VWAP trend pullback SHORT — HTF bear, pullback to EMA, RSI reject, volume spike")
+
+alertcondition(s2Long, "S2 VIX+TICK impulse LONG", "SPY S2: VIX+TICK impulse LONG — VIX ok, above VWAP/EMA, TICK turn, RSI>50, volume")
+alertcondition(s2Short, "S2 VIX+TICK impulse SHORT", "SPY S2: VIX+TICK impulse SHORT — VIX ok, below VWAP/EMA, TICK turn, RSI<50, volume")
+
+alertcondition(s3Long, "S3 VP ledge LONG", "SPY S3: VP ledge reversal LONG — ledge low, oversold RSI, rejection candle, volume")
+alertcondition(s3Short, "S3 VP ledge SHORT", "SPY S3: VP ledge reversal SHORT — ledge high, overbought RSI, rejection candle, volume")
+
+alertcondition(anyLong, "ANY setup LONG (confluence)", "SPY scalp LONG confluence fired — check panel for S1/S2/S3")
+alertcondition(anyShort, "ANY setup SHORT (confluence)", "SPY scalp SHORT confluence fired — check panel for S1/S2/S3")
+
+alertcondition(anyLong or anyShort, "Any scalp signal", "SPY scalp alert — direction and setup on chart panel")

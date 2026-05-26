@@ -1,0 +1,117 @@
+//@version=5
+strategy(
+     "SPY Trend Pullback Strategy with Built-in P/L",
+     overlay = true,
+     initial_capital = 10000,
+     currency = currency.USD,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 10,
+     pyramiding = 0,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.01,
+     process_orders_on_close = true
+)
+
+// Symbol control
+enforceSpyOnly = input.bool(true, "Only trade SPY ticker", group = "Symbol")
+
+// Session filter
+useSessionFilter = input.bool(true, "Use regular market session filter", group = "Session")
+sessionInput = input.session("0930-1600", "Trading session", group = "Session")
+
+// Trend and signal logic
+fastEmaLen = input.int(21, "Fast EMA length", minval = 1, group = "Signals")
+slowEmaLen = input.int(55, "Slow EMA length", minval = 1, group = "Signals")
+trendEmaLen = input.int(200, "Trend EMA length", minval = 1, group = "Signals")
+rsiLen = input.int(14, "RSI length", minval = 2, group = "Signals")
+rsiLongRecovery = input.float(45.0, "RSI long recovery level", minval = 1.0, maxval = 99.0, step = 0.5, group = "Signals")
+rsiShortBreak = input.float(55.0, "RSI short breakdown level", minval = 1.0, maxval = 99.0, step = 0.5, group = "Signals")
+allowShorts = input.bool(false, "Enable short trades", group = "Signals")
+
+// Risk controls
+atrLen = input.int(14, "ATR length", minval = 1, group = "Risk")
+stopAtrMult = input.float(1.5, "Stop-loss ATR multiple", minval = 0.1, step = 0.1, group = "Risk")
+targetAtrMult = input.float(3.0, "Take-profit ATR multiple", minval = 0.2, step = 0.1, group = "Risk")
+exitOnTrendBreak = input.bool(true, "Exit on trend break", group = "Risk")
+
+// Display controls
+showPlTable = input.bool(true, "Show on-chart P/L table", group = "Display")
+
+isSpyTicker = str.contains(syminfo.tickerid, "SPY")
+isAllowedSymbol = not enforceSpyOnly or isSpyTicker
+isInSession = not useSessionFilter or not na(time(timeframe.period, sessionInput))
+
+emaFast = ta.ema(close, fastEmaLen)
+emaSlow = ta.ema(close, slowEmaLen)
+emaTrend = ta.ema(close, trendEmaLen)
+rsiValue = ta.rsi(close, rsiLen)
+atrValue = ta.atr(atrLen)
+
+longTrendOk = close > emaTrend and emaFast > emaSlow
+shortTrendOk = close < emaTrend and emaFast < emaSlow
+
+longSignal = isAllowedSymbol and isInSession and longTrendOk and (ta.crossover(emaFast, emaSlow) or ta.crossover(rsiValue, rsiLongRecovery))
+shortSignal = isAllowedSymbol and isInSession and allowShorts and shortTrendOk and (ta.crossunder(emaFast, emaSlow) or ta.crossunder(rsiValue, rsiShortBreak))
+
+if longSignal and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+
+if shortSignal and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short)
+
+longStop = strategy.position_avg_price - (atrValue * stopAtrMult)
+longTarget = strategy.position_avg_price + (atrValue * targetAtrMult)
+shortStop = strategy.position_avg_price + (atrValue * stopAtrMult)
+shortTarget = strategy.position_avg_price - (atrValue * targetAtrMult)
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", from_entry = "Long", stop = longStop, limit = longTarget)
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", from_entry = "Short", stop = shortStop, limit = shortTarget)
+
+if exitOnTrendBreak and strategy.position_size > 0 and close < emaSlow
+    strategy.close("Long", comment = "Trend break")
+
+if exitOnTrendBreak and strategy.position_size < 0 and close > emaSlow
+    strategy.close("Short", comment = "Trend break")
+
+plot(emaFast, "EMA Fast", color = color.new(color.teal, 0), linewidth = 2)
+plot(emaSlow, "EMA Slow", color = color.new(color.orange, 0), linewidth = 2)
+plot(emaTrend, "EMA Trend", color = color.new(color.blue, 15), linewidth = 2)
+
+bgcolor(enforceSpyOnly and not isSpyTicker ? color.new(color.red, 88) : na)
+
+alertcondition(longSignal, "SPY long setup", "SPY long setup triggered.")
+alertcondition(shortSignal, "SPY short setup", "SPY short setup triggered.")
+
+var table plTable = table.new(position.top_right, 2, 7, border_width = 1)
+
+closedTrades = strategy.closedtrades
+winRate = closedTrades > 0 ? (strategy.wintrades / closedTrades) * 100.0 : na
+absGrossLoss = math.abs(strategy.grossloss)
+profitFactor = absGrossLoss > 0 ? strategy.grossprofit / absGrossLoss : na
+netProfit = strategy.netprofit
+openProfit = strategy.openprofit
+
+if barstate.islast and showPlTable
+    table.cell(plTable, 0, 0, "Metric", bgcolor = color.new(color.gray, 75), text_color = color.white)
+    table.cell(plTable, 1, 0, "Value", bgcolor = color.new(color.gray, 75), text_color = color.white)
+
+    table.cell(plTable, 0, 1, "Net Profit")
+    table.cell(plTable, 1, 1, str.tostring(netProfit, format.mintick), text_color = netProfit >= 0 ? color.lime : color.red)
+
+    table.cell(plTable, 0, 2, "Open P/L")
+    table.cell(plTable, 1, 2, str.tostring(openProfit, format.mintick), text_color = openProfit >= 0 ? color.lime : color.red)
+
+    table.cell(plTable, 0, 3, "Win Rate %")
+    table.cell(plTable, 1, 3, na(winRate) ? "N/A" : str.tostring(winRate, "#.##"))
+
+    table.cell(plTable, 0, 4, "Closed Trades")
+    table.cell(plTable, 1, 4, str.tostring(closedTrades))
+
+    table.cell(plTable, 0, 5, "Profit Factor")
+    table.cell(plTable, 1, 5, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.##"))
+
+    table.cell(plTable, 0, 6, "Max Drawdown")
+    table.cell(plTable, 1, 6, str.tostring(strategy.max_drawdown, format.mintick), text_color = color.orange)

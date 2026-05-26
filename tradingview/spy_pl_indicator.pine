@@ -1,0 +1,157 @@
+//@version=5
+strategy(
+     title="SPY P&L Crossover",
+     shorttitle="SPY P&L",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0,
+     slippage=1,
+     pyramiding=0,
+     calc_on_every_tick=false,
+     process_orders_on_close=true)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+grpSignal   = "Signal"
+fastLen     = input.int(10,  "Fast SMA", minval=1, group=grpSignal)
+slowLen     = input.int(30,  "Slow SMA", minval=2, group=grpSignal)
+useRsi      = input.bool(true, "RSI filter", group=grpSignal)
+rsiLen      = input.int(14,  "RSI length", minval=2, group=grpSignal)
+rsiLongMin  = input.int(45,  "Long RSI min", minval=0, maxval=100, group=grpSignal)
+rsiShortMax = input.int(55,  "Short RSI max", minval=0, maxval=100, group=grpSignal)
+allowShorts = input.bool(false, "Allow short trades", group=grpSignal, tooltip="SPY is often traded long-only")
+
+grpRisk     = "Risk / exits"
+atrLen      = input.int(14,  "ATR length", minval=1, group=grpRisk)
+slMult      = input.float(1.5, "Stop ATR x", minval=0.1, step=0.1, group=grpRisk)
+tpMult      = input.float(2.0, "Target ATR x", minval=0.1, step=0.1, group=grpRisk)
+useTrail    = input.bool(false, "ATR trailing stop after entry", group=grpRisk)
+trailMult   = input.float(2.0, "Trail ATR x", minval=0.1, step=0.1, group=grpRisk)
+
+grpDisplay  = "P&L panel"
+showPanel   = input.bool(true, "Show profitability table", group=grpDisplay)
+panelPos    = input.string("Top Right", "Panel position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDisplay)
+showMarks   = input.bool(true, "Show entry / exit markers", group=grpDisplay)
+
+// ── Indicators ────────────────────────────────────────────────────────────────
+fastMa  = ta.sma(close, fastLen)
+slowMa  = ta.sma(close, slowLen)
+rsiVal  = ta.rsi(close, rsiLen)
+atrVal  = ta.atr(atrLen)
+
+bullCross = ta.crossover(fastMa, slowMa)
+bearCross = ta.crossunder(fastMa, slowMa)
+
+longOk  = not useRsi or rsiVal >= rsiLongMin
+shortOk = not useRsi or rsiVal <= rsiShortMax
+
+longSignal  = bullCross and longOk
+shortSignal = allowShorts and bearCross and shortOk
+flatSignal  = bearCross and not allowShorts
+
+// ── Orders ────────────────────────────────────────────────────────────────────
+var float entryStop = na
+var float entryTp   = na
+
+if longSignal and strategy.position_size <= 0
+    entryStop := close - atrVal * slMult
+    entryTp   := close + atrVal * tpMult
+    strategy.entry("Long", strategy.long)
+    if useTrail
+        strategy.exit("Long Exit", "Long", stop=entryStop, limit=entryTp, trail_offset=atrVal * trailMult, trail_points=atrVal * trailMult)
+    else
+        strategy.exit("Long Exit", "Long", stop=entryStop, limit=entryTp)
+
+if shortSignal and strategy.position_size >= 0
+    entryStop := close + atrVal * slMult
+    entryTp   := close - atrVal * tpMult
+    strategy.entry("Short", strategy.short)
+    if useTrail
+        strategy.exit("Short Exit", "Short", stop=entryStop, limit=entryTp, trail_offset=atrVal * trailMult, trail_points=atrVal * trailMult)
+    else
+        strategy.exit("Short Exit", "Short", stop=entryStop, limit=entryTp)
+
+if flatSignal and strategy.position_size > 0
+    strategy.close("Long", comment="MA cross down")
+
+// ── Chart visuals ─────────────────────────────────────────────────────────────
+plot(fastMa, "Fast SMA", color=color.new(color.teal, 0), linewidth=2)
+plot(slowMa, "Slow SMA", color=color.new(color.orange, 0), linewidth=2)
+
+plotshape(showMarks and longSignal, title="Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, text="BUY")
+plotshape(showMarks and (shortSignal or flatSignal), title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="SELL")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 92) : strategy.position_size < 0 ? color.new(color.red, 92) : na)
+
+// ── P&L / profitability stats ─────────────────────────────────────────────────
+totalTrades   = strategy.closedtrades
+winTrades     = strategy.wintrades
+lossTrades    = strategy.losstrades
+winRate       = totalTrades > 0 ? 100.0 * winTrades / totalTrades : 0.0
+netProfit     = strategy.netprofit
+netProfitPct  = strategy.initial_capital > 0 ? 100.0 * netProfit / strategy.initial_capital : 0.0
+grossProfit   = strategy.grossprofit
+grossLoss     = strategy.grossloss
+profitFactor  = grossLoss != 0 ? grossProfit / math.abs(grossLoss) : na
+avgTrade      = totalTrades > 0 ? netProfit / totalTrades : 0.0
+maxDrawdown   = strategy.max_drawdown
+maxDrawdownPct = strategy.initial_capital > 0 ? 100.0 * maxDrawdown / strategy.initial_capital : 0.0
+openPnl       = strategy.openprofit
+isProfitable  = netProfit > 0
+
+panelLocation = panelPos == "Top Left" ? position.top_left :
+     panelPos == "Bottom Right" ? position.bottom_right :
+     panelPos == "Bottom Left" ? position.bottom_left :
+     position.top_right
+
+var table pnlTable = table.new(panelLocation, 2, 11, border_width=1)
+
+if showPanel and barstate.islastconfirmedhistory
+    headerBg = color.new(#1e3a5f, 0)
+    labelBg  = color.new(#0f172a, 10)
+    valueBg  = color.new(#0f172a, 0)
+    profitClr = color.new(color.lime, 0)
+    lossClr   = color.new(color.red, 0)
+    neutralClr = color.new(color.gray, 0)
+
+    table.cell(pnlTable, 0, 0, "SPY P&L", text_color=color.white, bgcolor=headerBg, text_size=size.normal)
+    table.cell(pnlTable, 1, 0, isProfitable ? "PROFITABLE" : totalTrades == 0 ? "NO TRADES" : "UNPROFITABLE",
+         text_color=isProfitable ? profitClr : totalTrades == 0 ? neutralClr : lossClr, bgcolor=headerBg, text_size=size.normal)
+
+    table.cell(pnlTable, 0, 1, "Net P&L", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 1, str.tostring(netProfit, format.mintick) + " (" + str.tostring(netProfitPct, "#.##") + "%)",
+         text_color=netProfit >= 0 ? profitClr : lossClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 2, "Open P&L", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 2, str.tostring(openPnl, format.mintick),
+         text_color=openPnl >= 0 ? profitClr : lossClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 3, "Win rate", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 3, str.tostring(winRate, "#.##") + "% (" + str.tostring(winTrades) + "W / " + str.tostring(lossTrades) + "L)",
+         text_color=color.white, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 4, "Profit factor", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 4, na(profitFactor) ? "—" : str.tostring(profitFactor, "#.##"),
+         text_color=not na(profitFactor) and profitFactor >= 1 ? profitClr : lossClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 5, "Total trades", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 5, str.tostring(totalTrades), text_color=color.white, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 6, "Avg trade", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 6, str.tostring(avgTrade, format.mintick),
+         text_color=avgTrade >= 0 ? profitClr : lossClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 7, "Gross profit", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 7, str.tostring(grossProfit, format.mintick), text_color=profitClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 8, "Gross loss", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 8, str.tostring(grossLoss, format.mintick), text_color=lossClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 9, "Max drawdown", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 9, str.tostring(maxDrawdown, format.mintick) + " (" + str.tostring(maxDrawdownPct, "#.##") + "%)",
+         text_color=lossClr, bgcolor=valueBg)
+
+    table.cell(pnlTable, 0, 10, "Equity", text_color=color.white, bgcolor=labelBg)
+    table.cell(pnlTable, 1, 10, str.tostring(strategy.equity, format.mintick), text_color=color.white, bgcolor=valueBg)

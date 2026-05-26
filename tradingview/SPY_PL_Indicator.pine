@@ -1,0 +1,210 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SPY P&L Indicator — for use on SPY (or any symbol) in TradingView
+
+//@version=5
+indicator("SPY P&L & Profitability", shorttitle="SPY P&L", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+grpSignal   = "Signals"
+fastLen     = input.int(10, "Fast SMA", minval=1, group=grpSignal)
+slowLen     = input.int(30, "Slow SMA", minval=2, group=grpSignal)
+useRsi      = input.bool(true, "RSI filter", group=grpSignal)
+rsiLen      = input.int(14, "RSI length", minval=2, group=grpSignal)
+rsiOB       = input.int(70, "RSI overbought", minval=50, maxval=99, group=grpSignal)
+rsiOS       = input.int(30, "RSI oversold", minval=1, maxval=50, group=grpSignal)
+longOnly    = input.bool(true, "Long only (typical for SPY)", group=grpSignal)
+
+grpRisk     = "Risk & exits"
+useStops    = input.bool(true, "Use stop / target", group=grpRisk)
+stopPct     = input.float(1.5, "Stop loss %", minval=0.1, step=0.1, group=grpRisk) / 100.0
+targetPct   = input.float(3.0, "Take profit %", minval=0.1, step=0.1, group=grpRisk) / 100.0
+
+grpSize     = "Position size"
+shares      = input.int(100, "Shares per trade", minval=1, group=grpSize)
+commission  = input.float(0.005, "Commission per share ($)", minval=0.0, step=0.001, group=grpSize)
+
+grpSession  = "Session (SPY RTH)"
+useSession  = input.bool(false, "Only trade regular hours", group=grpSession)
+sessionStr  = input.session("0930-1600", "RTH session", group=grpSession)
+
+grpDisplay  = "Display"
+showTable   = input.bool(true, "Show P&L table", group=grpDisplay)
+showMarks   = input.bool(true, "Show entry / exit marks", group=grpDisplay)
+tablePos    = input.string("top_right", "Table position", options=["top_right", "top_left", "bottom_right", "bottom_left"], group=grpDisplay)
+
+// ─── Calculations ─────────────────────────────────────────────────────────────
+fastSma = ta.sma(close, fastLen)
+slowSma = ta.sma(close, slowLen)
+rsiVal  = ta.rsi(close, rsiLen)
+
+inSession = not useSession or not na(time(timeframe.period, sessionStr))
+
+rsiOkLong  = not useRsi or rsiVal < rsiOB
+rsiOkShort = not useRsi or rsiVal > rsiOS
+
+crossUp   = ta.crossover(fastSma, slowSma)
+crossDown = ta.crossunder(fastSma, slowSma)
+
+longEntry  = crossUp and inSession and rsiOkLong
+shortEntry = crossDown and inSession and rsiOkShort and not longOnly
+longExit   = crossDown and inSession
+shortExit  = crossUp and inSession
+
+// ─── Trade state ──────────────────────────────────────────────────────────────
+var int   posDir      = 0          // 1 = long, -1 = short, 0 = flat
+var float entryPx     = na
+var float stopPx      = na
+var float targetPx    = na
+
+var float realizedPnL = 0.0
+var int   tradeCount  = 0
+var int   winCount    = 0
+var int   lossCount   = 0
+var float grossProfit = 0.0
+var float grossLoss   = 0.0
+var float peakEquity  = 0.0
+var float maxDrawdown = 0.0
+
+commissionTotal(sh) =>
+    sh * commission * 2.0
+
+recordClose(exitPrice, dir) =>
+    float pnl = dir == 1 ? (exitPrice - entryPx) * shares : (entryPx - exitPrice) * shares
+    pnl -= commissionTotal(shares)
+    realizedPnL += pnl
+    tradeCount += 1
+    if pnl > 0
+        winCount += 1
+        grossProfit += pnl
+    else if pnl < 0
+        lossCount += 1
+        grossLoss += math.abs(pnl)
+    float eq = realizedPnL
+    peakEquity := math.max(peakEquity, eq)
+    maxDrawdown := math.max(maxDrawdown, peakEquity - eq)
+    pnl
+
+openLong() =>
+    posDir := 1
+    entryPx := close
+    stopPx := useStops ? entryPx * (1.0 - stopPct) : na
+    targetPx := useStops ? entryPx * (1.0 + targetPct) : na
+
+openShort() =>
+    posDir := -1
+    entryPx := close
+    stopPx := useStops ? entryPx * (1.0 + stopPct) : na
+    targetPx := useStops ? entryPx * (1.0 - targetPct) : na
+
+closePosition(exitPrice) =>
+    float pnl = recordClose(exitPrice, posDir)
+    posDir := 0
+    entryPx := na
+    stopPx := na
+    targetPx := na
+    pnl
+
+// Stop / target hits (intrabar)
+stoppedLong  = posDir == 1 and useStops and (low <= stopPx or high >= targetPx)
+stoppedShort = posDir == -1 and useStops and (high >= stopPx or low <= targetPx)
+
+exitPxLong() =>
+    low <= stopPx ? stopPx : targetPx
+
+exitPxShort() =>
+    high >= stopPx ? stopPx : targetPx
+
+if stoppedLong
+    closePosition(exitPxLong())
+else if stoppedShort
+    closePosition(exitPxShort())
+
+// Signal-based entries / exits (after stop handling)
+if posDir == 0
+    if longEntry
+        openLong()
+    else if shortEntry
+        openShort()
+else if posDir == 1
+    if longExit or shortEntry
+        closePosition(close)
+        if shortEntry and not longOnly
+            openShort()
+        else if longEntry
+            openLong()
+else if posDir == -1
+    if shortExit or longEntry
+        closePosition(close)
+        if longEntry
+            openLong()
+
+// Unrealized P&L
+unrealizedPnL = posDir == 0 ? 0.0 : posDir == 1 ? (close - entryPx) * shares - commissionTotal(shares) : (entryPx - close) * shares - commissionTotal(shares)
+totalPnL      = realizedPnL + unrealizedPnL
+
+winRate      = tradeCount > 0 ? 100.0 * winCount / tradeCount : 0.0
+profitFactor = grossLoss > 0 ? grossProfit / grossLoss : tradeCount > 0 and grossProfit > 0 ? 999.0 : 0.0
+avgWin       = winCount > 0 ? grossProfit / winCount : 0.0
+avgLoss      = lossCount > 0 ? grossLoss / lossCount : 0.0
+isProfitable = totalPnL > 0
+
+// ─── Plots ────────────────────────────────────────────────────────────────────
+plot(fastSma, "Fast SMA", color=color.new(color.teal, 0), linewidth=2)
+plot(slowSma, "Slow SMA", color=color.new(color.orange, 0), linewidth=2)
+
+plot(posDir != 0 and useStops ? stopPx : na, "Stop", color=color.new(color.red, 30), style=plot.style_linebr, linewidth=1)
+plot(posDir != 0 and useStops ? targetPx : na, "Target", color=color.new(color.green, 30), style=plot.style_linebr, linewidth=1)
+
+bgcolor(posDir == 1 ? color.new(color.green, 92) : posDir == -1 ? color.new(color.red, 92) : na)
+
+plotshape(showMarks and longEntry and posDir == 1, title="Long entry", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, text="L")
+plotshape(showMarks and shortEntry and posDir == -1 and not longOnly, title="Short entry", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="S")
+
+// ─── P&L table ────────────────────────────────────────────────────────────────
+posFromStr(s) =>
+    s == "top_left" ? position.top_left : s == "bottom_right" ? position.bottom_right : s == "bottom_left" ? position.bottom_left : position.top_right
+
+var table pnlTable = table.new(posFromStr(tablePos), 2, 12, bgcolor=color.new(color.black, 15), border_width=1)
+
+if showTable and barstate.islast
+    table.cell(pnlTable, 0, 0, "SPY P&L", text_color=color.white, text_size=size.normal)
+    table.cell(pnlTable, 1, 0, isProfitable ? "PROFITABLE" : "NOT PROFITABLE", text_color=isProfitable ? color.lime : color.red, text_size=size.normal)
+
+    table.cell(pnlTable, 0, 1, "Total P&L", text_color=color.gray)
+    table.cell(pnlTable, 1, 1, str.tostring(totalPnL, "#.##"), text_color=totalPnL >= 0 ? color.lime : color.red)
+
+    table.cell(pnlTable, 0, 2, "Realized", text_color=color.gray)
+    table.cell(pnlTable, 1, 2, str.tostring(realizedPnL, "#.##"), text_color=realizedPnL >= 0 ? color.lime : color.red)
+
+    table.cell(pnlTable, 0, 3, "Unrealized", text_color=color.gray)
+    table.cell(pnlTable, 1, 3, str.tostring(unrealizedPnL, "#.##"), text_color=unrealizedPnL >= 0 ? color.lime : color.red)
+
+    table.cell(pnlTable, 0, 4, "Trades", text_color=color.gray)
+    table.cell(pnlTable, 1, 4, str.tostring(tradeCount), text_color=color.white)
+
+    table.cell(pnlTable, 0, 5, "Win rate", text_color=color.gray)
+    table.cell(pnlTable, 1, 5, str.tostring(winRate, "#.1") + "%", text_color=winRate >= 50 ? color.lime : color.orange)
+
+    table.cell(pnlTable, 0, 6, "Wins / Losses", text_color=color.gray)
+    table.cell(pnlTable, 1, 6, str.tostring(winCount) + " / " + str.tostring(lossCount), text_color=color.white)
+
+    table.cell(pnlTable, 0, 7, "Profit factor", text_color=color.gray)
+    table.cell(pnlTable, 1, 7, str.tostring(profitFactor, "#.##"), text_color=profitFactor >= 1 ? color.lime : color.red)
+
+    table.cell(pnlTable, 0, 8, "Avg win", text_color=color.gray)
+    table.cell(pnlTable, 1, 8, str.tostring(avgWin, "#.##"), text_color=color.lime)
+
+    table.cell(pnlTable, 0, 9, "Avg loss", text_color=color.gray)
+    table.cell(pnlTable, 1, 9, str.tostring(avgLoss, "#.##"), text_color=color.red)
+
+    table.cell(pnlTable, 0, 10, "Max drawdown", text_color=color.gray)
+    table.cell(pnlTable, 1, 10, str.tostring(maxDrawdown, "#.##"), text_color=color.orange)
+
+    table.cell(pnlTable, 0, 11, "Position", text_color=color.gray)
+    posText = posDir == 1 ? "LONG @ " + str.tostring(entryPx, "#.##") : posDir == -1 ? "SHORT @ " + str.tostring(entryPx, "#.##") : "FLAT"
+    table.cell(pnlTable, 1, 11, posText, text_color=posDir == 1 ? color.lime : posDir == -1 ? color.red : color.gray)
+
+// Alerts
+alertcondition(longEntry, "SPY Long entry", "SPY P&L: Long entry signal")
+alertcondition(longExit and posDir[1] == 1, "SPY Long exit", "SPY P&L: Long exit signal")
+alertcondition(isProfitable and not isProfitable[1], "Became profitable", "SPY P&L: Strategy crossed into profit")

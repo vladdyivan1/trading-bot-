@@ -1,0 +1,206 @@
+//@version=5
+strategy("SPY Adaptive Trend Pullback with P&L", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.01, slippage=1, pyramiding=0, process_orders_on_close=true)
+
+// This script is intended for SPY research in TradingView. It cannot guarantee
+// profitability; validate it with Strategy Tester, out-of-sample periods, and
+// paper trading before risking capital.
+
+// ---- Inputs
+fastEmaLen = input.int(21, "Fast EMA", minval=1)
+slowEmaLen = input.int(50, "Slow EMA", minval=1)
+trendEmaLen = input.int(200, "Trend EMA", minval=1)
+
+rsiLen = input.int(14, "RSI Length", minval=1)
+rsiLongTrigger = input.float(50.0, "Long RSI Recovery Level", minval=1.0, maxval=99.0, step=0.5)
+rsiShortTrigger = input.float(50.0, "Short RSI Rejection Level", minval=1.0, maxval=99.0, step=0.5)
+
+macdFastLen = input.int(12, "MACD Fast", minval=1)
+macdSlowLen = input.int(26, "MACD Slow", minval=1)
+macdSignalLen = input.int(9, "MACD Signal", minval=1)
+
+atrLen = input.int(14, "ATR Length", minval=1)
+stopAtrMult = input.float(1.6, "Stop Loss ATR Multiple", minval=0.1, step=0.1)
+targetAtrMult = input.float(2.4, "Take Profit ATR Multiple", minval=0.1, step=0.1)
+useTrailingStop = input.bool(true, "Use ATR Trailing Stop")
+trailAtrMult = input.float(2.0, "Trailing Stop ATR Multiple", minval=0.1, step=0.1)
+
+allowLongs = input.bool(true, "Allow Long Trades")
+allowShorts = input.bool(false, "Allow Short Trades")
+exitOnTrendBreak = input.bool(true, "Exit on EMA Trend Break")
+maxBarsInTrade = input.int(40, "Max Bars in Trade", minval=1)
+
+useVolumeFilter = input.bool(true, "Require Relative Volume")
+relativeVolumeLen = input.int(20, "Relative Volume Length", minval=1)
+minRelativeVolume = input.float(0.75, "Minimum Relative Volume", minval=0.0, step=0.05)
+
+useSessionFilter = input.bool(false, "Limit to Regular Session")
+regularSession = input.session("0930-1555", "Regular Session")
+
+useDailyLossGuard = input.bool(true, "Pause After Daily Loss")
+maxDailyLossPct = input.float(1.25, "Max Daily Loss %", minval=0.1, step=0.05)
+useDrawdownGuard = input.bool(true, "Close/Pause After Equity Drawdown")
+maxDrawdownPct = input.float(8.0, "Max Equity Drawdown %", minval=0.1, step=0.25)
+
+showSignals = input.bool(true, "Show Buy/Sell Markers")
+showDashboard = input.bool(true, "Show P&L Dashboard")
+
+// ---- Core calculations
+fastEma = ta.ema(close, fastEmaLen)
+slowEma = ta.ema(close, slowEmaLen)
+trendEma = ta.ema(close, trendEmaLen)
+rsi = ta.rsi(close, rsiLen)
+atr = ta.atr(atrLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
+
+averageVolume = math.max(nz(ta.sma(volume, relativeVolumeLen), volume), 1.0)
+relativeVolume = volume / averageVolume
+volumeOk = not useVolumeFilter or relativeVolume >= minRelativeVolume
+sessionOk = not useSessionFilter or not na(time(timeframe.period, regularSession))
+
+baseEquity = math.max(strategy.equity - strategy.netprofit - strategy.openprofit, 0.01)
+
+timeChange = ta.change(time("D"))
+newDay = not na(timeChange) and timeChange != 0
+var float dayStartEquity = na
+if na(dayStartEquity) or newDay
+    dayStartEquity := strategy.equity
+
+dailyPnlPct = dayStartEquity > 0 ? (strategy.equity - dayStartEquity) / dayStartEquity * 100.0 : 0.0
+dailyLossHit = useDailyLossGuard and dailyPnlPct <= -maxDailyLossPct
+
+var float equityHighWatermark = na
+equityHighWatermark := na(equityHighWatermark) ? strategy.equity : math.max(equityHighWatermark, strategy.equity)
+currentDrawdownPct = equityHighWatermark > 0 ? (equityHighWatermark - strategy.equity) / equityHighWatermark * 100.0 : 0.0
+drawdownHit = useDrawdownGuard and currentDrawdownPct >= maxDrawdownPct
+
+riskOk = not dailyLossHit and not drawdownHit
+
+longTrend = close > trendEma and fastEma > slowEma and macdLine > macdSignal
+shortTrend = close < trendEma and fastEma < slowEma and macdLine < macdSignal
+
+longPullbackRecovery = ta.crossover(rsi, rsiLongTrigger) and close > fastEma and macdHist > macdHist[1]
+shortPullbackRejection = ta.crossunder(rsi, rsiShortTrigger) and close < fastEma and macdHist < macdHist[1]
+
+longSignal = allowLongs and riskOk and sessionOk and volumeOk and longTrend and longPullbackRecovery
+shortSignal = allowShorts and riskOk and sessionOk and volumeOk and shortTrend and shortPullbackRejection
+
+// ---- Trade management
+var float entryAtr = na
+var int entryBar = na
+var float longHighSinceEntry = na
+var float shortLowSinceEntry = na
+
+if strategy.position_size == 0
+    entryAtr := na
+    entryBar := na
+    longHighSinceEntry := na
+    shortLowSinceEntry := na
+
+if longSignal and strategy.position_size <= 0
+    entryAtr := atr
+    strategy.entry("Long", strategy.long, comment="SPY Long")
+
+if shortSignal and strategy.position_size >= 0
+    entryAtr := atr
+    strategy.entry("Short", strategy.short, comment="SPY Short")
+
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    entryBar := bar_index
+
+barsInTrade = na(entryBar) ? 0 : bar_index - entryBar
+exitAtr = na(entryAtr) ? atr : entryAtr
+
+longStop = strategy.position_avg_price - exitAtr * stopAtrMult
+longTarget = strategy.position_avg_price + exitAtr * targetAtrMult
+shortStop = strategy.position_avg_price + exitAtr * stopAtrMult
+shortTarget = strategy.position_avg_price - exitAtr * targetAtrMult
+
+if strategy.position_size > 0
+    longHighSinceEntry := strategy.position_size[1] <= 0 ? high : math.max(nz(longHighSinceEntry, high), high)
+
+if strategy.position_size < 0
+    shortLowSinceEntry := strategy.position_size[1] >= 0 ? low : math.min(nz(shortLowSinceEntry, low), low)
+
+activeLongStop = useTrailingStop and not na(longHighSinceEntry) ? math.max(longStop, longHighSinceEntry - atr * trailAtrMult) : longStop
+activeShortStop = useTrailingStop and not na(shortLowSinceEntry) ? math.min(shortStop, shortLowSinceEntry + atr * trailAtrMult) : shortStop
+
+if strategy.position_size > 0
+    strategy.exit("Long Risk Exit", from_entry="Long", stop=activeLongStop, limit=longTarget)
+
+if strategy.position_size < 0
+    strategy.exit("Short Risk Exit", from_entry="Short", stop=activeShortStop, limit=shortTarget)
+
+if exitOnTrendBreak and strategy.position_size > 0 and ta.crossunder(close, slowEma)
+    strategy.close("Long", comment="Long Trend Break")
+
+if exitOnTrendBreak and strategy.position_size < 0 and ta.crossover(close, slowEma)
+    strategy.close("Short", comment="Short Trend Break")
+
+if barsInTrade >= maxBarsInTrade and strategy.position_size > 0
+    strategy.close("Long", comment="Max Bars")
+
+if barsInTrade >= maxBarsInTrade and strategy.position_size < 0
+    strategy.close("Short", comment="Max Bars")
+
+if drawdownHit and strategy.position_size != 0
+    strategy.close_all(comment="Drawdown Guard")
+
+// ---- Visuals
+plot(fastEma, "Fast EMA", color=color.new(color.teal, 0), linewidth=2)
+plot(slowEma, "Slow EMA", color=color.new(color.orange, 0), linewidth=2)
+plot(trendEma, "Trend EMA", color=color.new(color.blue, 0), linewidth=2)
+
+plot(strategy.position_size > 0 ? activeLongStop : na, "Long Stop", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(strategy.position_size > 0 ? longTarget : na, "Long Target", color=color.new(color.green, 0), style=plot.style_linebr)
+plot(strategy.position_size < 0 ? activeShortStop : na, "Short Stop", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(strategy.position_size < 0 ? shortTarget : na, "Short Target", color=color.new(color.green, 0), style=plot.style_linebr)
+
+plotshape(showSignals and longSignal, title="Long Signal", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), text="BUY", size=size.small)
+plotshape(showSignals and shortSignal, title="Short Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), text="SELL", size=size.small)
+
+bgcolor(dailyLossHit ? color.new(color.orange, 86) : na, title="Daily Loss Pause")
+bgcolor(drawdownHit ? color.new(color.red, 86) : na, title="Drawdown Pause")
+
+// ---- P&L dashboard
+closedTrades = strategy.closedtrades
+winRate = closedTrades > 0 ? strategy.wintrades / closedTrades * 100.0 : na
+profitFactor = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+netProfitPct = strategy.netprofit / baseEquity * 100.0
+openProfitPct = strategy.openprofit / baseEquity * 100.0
+
+formatPct(value) =>
+    na(value) ? "n/a" : str.tostring(value, "#.##") + "%"
+
+formatCurrency(value) =>
+    "$" + str.tostring(value, "#.##")
+
+var table pnlTable = table.new(position.top_right, 2, 10, border_width=1)
+if showDashboard and barstate.islast
+    table.cell(pnlTable, 0, 0, "SPY P&L Strategy", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(pnlTable, 1, 0, syminfo.ticker, text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(pnlTable, 0, 1, "Net P&L", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 1, formatCurrency(strategy.netprofit) + " (" + formatPct(netProfitPct) + ")", text_color=strategy.netprofit >= 0 ? color.lime : color.red)
+    table.cell(pnlTable, 0, 2, "Open P&L", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 2, formatCurrency(strategy.openprofit) + " (" + formatPct(openProfitPct) + ")", text_color=strategy.openprofit >= 0 ? color.lime : color.red)
+    table.cell(pnlTable, 0, 3, "Closed Trades", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 3, str.tostring(closedTrades), text_color=color.white)
+    table.cell(pnlTable, 0, 4, "Win Rate", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 4, formatPct(winRate), text_color=na(winRate) ? color.white : winRate >= 50 ? color.lime : color.orange)
+    table.cell(pnlTable, 0, 5, "Profit Factor", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 5, na(profitFactor) ? "n/a" : str.tostring(profitFactor, "#.##"), text_color=na(profitFactor) ? color.white : profitFactor >= 1 ? color.lime : color.red)
+    table.cell(pnlTable, 0, 6, "Daily P&L", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 6, formatPct(dailyPnlPct), text_color=dailyPnlPct >= 0 ? color.lime : color.red)
+    table.cell(pnlTable, 0, 7, "Current DD", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 7, formatPct(currentDrawdownPct), text_color=currentDrawdownPct < maxDrawdownPct ? color.white : color.red)
+    table.cell(pnlTable, 0, 8, "Risk State", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 8, riskOk ? "Trading enabled" : "Paused", text_color=riskOk ? color.lime : color.red)
+    table.cell(pnlTable, 0, 9, "Note", text_color=color.white, bgcolor=color.new(color.gray, 72))
+    table.cell(pnlTable, 1, 9, "No profit guarantee", text_color=color.orange)
+
+if not showDashboard and barstate.islast
+    table.clear(pnlTable, 0, 0, 1, 9)
+
+alertcondition(longSignal, "SPY Long Setup", "SPY long setup detected by Adaptive Trend Pullback strategy.")
+alertcondition(shortSignal, "SPY Short Setup", "SPY short setup detected by Adaptive Trend Pullback strategy.")
+alertcondition(dailyLossHit, "Daily Loss Guard Active", "Daily loss guard is active; new entries are paused.")
+alertcondition(drawdownHit, "Drawdown Guard Active", "Drawdown guard is active; positions are closing and new entries are paused.")

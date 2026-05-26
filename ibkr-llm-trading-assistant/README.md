@@ -16,6 +16,7 @@ A modular Python trading system that connects to **Interactive Brokers** (IB Gat
 - Paper trade execution pipeline
 - Streamlit dashboard
 - Performance feedback and strategy ranking
+- TradingView SPY strategy script with built-in Strategy Tester P&L support
 
 ## Asset classes
 
@@ -122,10 +123,21 @@ ibkr-llm-trading-assistant/
   models/                 # Feature engineering & ML
   risk/                   # Risk manager, position sizing, kill switch
   execution/              # Paper/live traders, execution engine
+  tradingview/            # Pine Script strategy tools
   database/               # SQLAlchemy models & repositories
   app/                    # CLI & Streamlit dashboard
   tests/
 ```
+
+## TradingView SPY strategy
+
+The `tradingview/spy_adaptive_pl_strategy.pine` script can be pasted into
+TradingView's Pine Editor and added to a SPY chart. It uses `strategy()` so
+TradingView can calculate Strategy Tester P&L, while also plotting indicator
+overlays, trade markers, ATR stop/target levels, and a custom P&L dashboard.
+
+No TradingView script can guarantee profitability. Backtest and paper trade
+across multiple market regimes before risking capital.
 
 ## How the LLM layer works
 
